@@ -80,7 +80,6 @@ jobs:
       - name: Generate kernel config
         run: |
           export PATH="${{ github.workspace }}/clang-crDroid/bin:$PATH"
-          cd $KERNEL_NAME
           mkdir -p ${{ env.OUT_DIR }}
 
           make -C $KERNEL_NAME O=${{ env.OUT_DIR }} \
@@ -98,7 +97,6 @@ jobs:
       - name: Build kernel
         run: |
           export PATH="${{ github.workspace }}/clang-crDroid/bin:$PATH"
-          cd $KERNEL_NAME
 
           make -C $KERNEL_NAME O=${{ env.OUT_DIR }} \
             ARCH=arm64 \
