@@ -35,7 +35,7 @@ jobs:
             build-essential bc bison flex \
             libssl-dev libncurses5-dev libfl-dev \
             ccache curl wget git zip unzip \
-            device-tree-compiler python2 \
+            device-tree-compiler python3 \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Clone kernel source
