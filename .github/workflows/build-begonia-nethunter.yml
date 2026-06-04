@@ -1,0 +1,207 @@
+name: Build Begonia NetHunter Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: 'Kernel source repository URL'
+        required: true
+        default: 'https://github.com/xiaomi-begonia-dev/android_kernel_xiaomi_mt6785'
+      kernel_branch:
+        description: 'Kernel source branch'
+        required: true
+        default: 'fourteen'
+      defconfig:
+        description: 'Kernel defconfig name'
+        required: true
+        default: 'begonia_user_defconfig'
+
+env:
+  OUT_DIR: ${{ github.workspace }}/out
+  KERNEL_NAME: begonia-nethunter
+
+jobs:
+  build:
+    name: Build NetHunter Kernel for begonia
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libncurses5-dev libfl-dev \
+            ccache curl wget git zip unzip \
+            device-tree-compiler python2 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone kernel source
+        run: |
+          git clone --recursive --depth=1 -j$(nproc) \
+            --branch ${{ github.event.inputs.kernel_branch }} \
+            ${{ github.event.inputs.kernel_repo }} \
+            $KERNEL_NAME
+
+      - name: Clone NetHunter kernel builder & apply patches
+        run: |
+          git clone --depth=1 \
+            https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel-builder.git \
+            nethunter-builder
+
+          cd $KERNEL_NAME
+
+          PATCH_DIR=${{ github.workspace }}/nethunter-builder/patches/4.14
+          for patch in "$PATCH_DIR"/*.patch; do
+            echo "Applying patch: $(basename $patch)"
+            patch -p1 --ignore-whitespace --forward < "$patch" 2>&1 || echo "Patch $(basename $patch) skipped or already applied"
+          done
+
+      - name: Clone AnyKernel3
+        run: |
+          git clone --depth=1 \
+            https://github.com/Wahid7852/AnyKernel AnyKernel3
+
+      - name: Get toolchain (crDroid Clang r547379)
+        run: |
+          git clone --depth=1 \
+            --branch 15.0 \
+            https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r547379 \
+            clang-crDroid
+
+      - name: Create NetHunter defconfig
+        run: |
+          cd $KERNEL_NAME
+          cp arch/arm64/configs/${{ github.event.inputs.defconfig }} arch/arm64/configs/nethunter_defconfig
+
+          cat >> arch/arm64/configs/nethunter_defconfig << 'CONFIGEOF'
+
+# NetHunter specific options
+CONFIG_NETFILTER_XT_TARGET_TTL=y
+CONFIG_IP_NF_TARGET_TTL=m
+CONFIG_USB_SERIAL=y
+CONFIG_USB_SERIAL_GENERIC=y
+CONFIG_USB_SERIAL_PL2303=y
+CONFIG_USB_SERIAL_CP210X=y
+CONFIG_USB_SERIAL_FTDI_SIO=y
+CONFIG_USB_SERIAL_OPTION=y
+
+# MAC80211 + CFG80211 for external Wi-Fi
+CONFIG_MAC80211=m
+CONFIG_CFG80211=m
+CONFIG_WIRELESS_EXT=y
+CONFIG_WEXT_PRIV=y
+CONFIG_RFKILL=y
+
+# Bluetooth
+CONFIG_BT=m
+CONFIG_BT_HCIBTUSB=m
+CONFIG_BT_HCIUART=m
+CONFIG_BT_RFCOMM=y
+CONFIG_BT_RFCOMM_TTY=y
+CONFIG_BT_BNEP=m
+CONFIG_BT_HIDP=m
+
+# External Wi-Fi drivers
+CONFIG_RTL8187=m
+
+# Netfilter enhancements
+CONFIG_NETFILTER_XT_TARGET_TCPMSS=y
+CONFIG_NETFILTER_XT_MATCH_TTL=m
+CONFIG_NETFILTER_XT_MATCH_STATE=y
+CONFIG_IP_NF_FTP=m
+CONFIG_NF_NAT_FTP=m
+
+# Filesystem support
+CONFIG_FUSE_FS=y
+CONFIG_NFS_FS=m
+CONFIG_NFS_V2=m
+CONFIG_NFS_V3=m
+CONFIG_CIFS=m
+
+# USB support
+CONFIG_USB_ACM=m
+CONFIG_USB_WDM=m
+
+# Network
+CONFIG_NET_IPIP=m
+CONFIG_NET_IPGRE=m
+CONFIG_NET_IPGRE_DEMUX=m
+CONFIG_IPV6=m
+CONFIG_IPV6_OPTIMISTIC_DAD=y
+CONFIG_INET_ESP=m
+
+# System V IPC
+CONFIG_SYSVIPC=y
+CONFIG_SYSVIPC_SYSCTL=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_POSIX_MQUEUE_SYSCTL=y
+CONFIGFIGEOF
+
+          echo "NetHunter config lines appended to nethunter_defconfig"
+
+      - name: Generate kernel config
+        run: |
+          export PATH="${{ github.workspace }}/clang-crDroid/bin:$PATH"
+          cd $KERNEL_NAME
+          mkdir -p ${{ env.OUT_DIR }}
+
+          make -C $KERNEL_NAME O=${{ env.OUT_DIR }} \
+            ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
+            LLVM=1 LLVM_IAS=1 \
+            AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            nethunter_defconfig
+
+      - name: Build kernel
+        run: |
+          export PATH="${{ github.workspace }}/clang-crDroid/bin:$PATH"
+          cd $KERNEL_NAME
+
+          make -C $KERNEL_NAME O=${{ env.OUT_DIR }} \
+            ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
+            LLVM=1 LLVM_IAS=1 \
+            AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            -j$(nproc)
+
+      - name: Package AnyKernel3
+        run: |
+          if [ -f "${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz" ]; then
+            cp "${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz" AnyKernel3/
+            echo "Copied Image.gz"
+          else
+            echo "Image.gz not found!"
+            ls -la ${{ env.OUT_DIR }}/arch/arm64/boot/ || true
+          fi
+
+          if [ -f "${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img" ]; then
+            cp "${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img" AnyKernel3/
+            echo "Copied dtbo.img"
+          fi
+
+          cd AnyKernel3
+          sed -i 's/kernel.string=.*/kernel.string=NetHunter Kernel for begonia by opencode/' anykernel.sh
+          sed -i 's/device.name1=.*/device.name1=begonia/' anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=begoniain/' anykernel.sh
+          zip -r9 ../begonia-NetHunter-Kernel-A14.zip * \
+            -x ".git" "README.md" "*placeholder"
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: begonia-NetHunter-Kernel-A14
+          path: begonia-NetHunter-Kernel-A14.zip
+          if-no-files-found: error
