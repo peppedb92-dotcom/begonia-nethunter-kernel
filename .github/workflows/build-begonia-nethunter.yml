@@ -59,6 +59,14 @@ jobs:
             patch -p1 --ignore-whitespace --forward < "$patch" 2>&1 || echo "Patch $(basename $patch) skipped or already applied"
           done
 
+      - name: Add MT7603U USB ID to in-kernel mt7601u driver
+        run: |
+          cd $KERNEL_NAME
+          echo "Adding 0e8d:7603 to mt7601u device table..."
+          sed -i '/{ USB_DEVICE(0x0e8d, 0x760b) },/a\\t{ USB_DEVICE(0x0e8d, 0x7603) },' \
+            drivers/net/wireless/mediatek/mt7601u/usb.c
+          grep -n "0x7603\|0x760b" drivers/net/wireless/mediatek/mt7601u/usb.c
+
       - name: Clone AnyKernel3
         run: |
           git clone --depth=1 \
@@ -110,6 +118,25 @@ jobs:
             STRIP=llvm-strip \
             -j$(nproc)
 
+      - name: Clone MT7603U vendor driver
+        run: |
+          git clone --depth=1 --branch pub-test-v20220304 \
+            https://github.com/ChalesYu/buildroot_platform_hardware_wifi_mtk_drivers_mt7603.git \
+            mt7603u-driver
+
+      - name: Build MT7603U vendor driver
+        run: |
+          cd mt7603u-driver
+          # Build host tools first (bin2h)
+          make -C tools
+          ./tools/bin2h
+          echo "Host tools built, now building kernel module..."
+          # Build the kernel module against the built kernel
+          make KSRC=${{ env.OUT_DIR }} \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            -j$(nproc) 2>&1 || echo "WARNING: mt7603u vendor driver build failed, continuing anyway"
+
       - name: Package AnyKernel3
         run: |
           if [ -f "${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz" ]; then
@@ -123,6 +150,48 @@ jobs:
           if [ -f "${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img" ]; then
             cp "${{ env.OUT_DIR }}/arch/arm64/boot/dtbo.img" AnyKernel3/
             echo "Copied dtbo.img"
+          fi
+
+          # Include MT7603U vendor driver module and firmware if built
+          if [ -f "mt7603u-driver/os/linux/mt7603usta.ko" ]; then
+            echo "Including MT7603U vendor driver module..."
+            mkdir -p AnyKernel3/modules
+            cp mt7603u-driver/os/linux/mt7603usta.ko AnyKernel3/modules/
+            # Copy firmware files
+            if [ -d "mt7603u-driver/mt7603_firmware" ]; then
+              cp mt7603u-driver/mt7603_firmware/* AnyKernel3/modules/ 2>/dev/null || true
+            fi
+            # Create install script
+            cat > AnyKernel3/modules/install-mt7603u.sh << 'MODEOF'
+#!/system/bin/sh
+# MT7603U WiFi driver installer for NetHunter
+# Run as root after flashing the kernel
+
+# Usage: sh /data/local/tmp/install-mt7603u.sh
+
+MODDIR="$(dirname "$(readlink -f "$0")")"
+
+# Copy firmware
+mount -o remount,rw / 2>/dev/null
+mkdir -p /lib/firmware 2>/dev/null
+cp -f "$MODDIR"/MT7603USTA.dat /lib/firmware/ 2>/dev/null
+cp -f "$MODDIR"/*.bin /lib/firmware/ 2>/dev/null
+
+# Load module
+insmod "$MODDIR"/mt7603usta.ko
+
+# Verify
+if lsmod | grep -q mt7603; then
+  echo "MT7603U driver loaded successfully"
+  echo "Interface name:"
+  iw dev 2>/dev/null || ip link show 2>/dev/null | grep -E "^[0-9]+: ra"
+else
+  echo "Failed to load MT7603U driver"
+fi
+MODEOF
+            chmod +x AnyKernel3/modules/install-mt7603u.sh
+          else
+            echo "MT7603U vendor module not found, kernel only"
           fi
 
           cd AnyKernel3
