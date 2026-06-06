@@ -127,12 +127,11 @@ jobs:
       - name: Build MT7603U vendor driver
         run: |
           cd mt7603u-driver
-          # Build host tools first (bin2h)
-          make -C tools
-          ./tools/bin2h
+          # Use Makefile targets which set required env vars (RT28xx_DIR, CHIPSET)
+          make build_tools
           echo "Host tools built, now building kernel module..."
           # Build the kernel module against the built kernel
-          make KSRC=${{ env.OUT_DIR }} \
+          make LINUX KSRC=${{ env.OUT_DIR }} \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             -j$(nproc) 2>&1 || echo "WARNING: mt7603u vendor driver build failed, continuing anyway"
